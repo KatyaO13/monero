@@ -23,32 +23,6 @@ OPTION(USE_DEVICE_TREZOR_UDP_RELEASE "Trezor UdpTransport in release mode" $ENV{
 OPTION(USE_DEVICE_TREZOR_DEBUG "Trezor Debugging enabled" $ENV{USE_DEVICE_TREZOR_DEBUG})
 OPTION(TREZOR_DEBUG "Main Trezor debugging switch" $ENV{TREZOR_DEBUG})
 
-# Helper function to fix cmake < 3.6.0 FindProtobuf variables
-function(_trezor_protobuf_fix_vars)
-    if(${CMAKE_VERSION} VERSION_LESS "3.6.0")
-        foreach(UPPER
-                PROTOBUF_SRC_ROOT_FOLDER
-                PROTOBUF_IMPORT_DIRS
-                PROTOBUF_DEBUG
-                PROTOBUF_LIBRARY
-                PROTOBUF_PROTOC_LIBRARY
-                PROTOBUF_INCLUDE_DIR
-                PROTOBUF_PROTOC_EXECUTABLE
-                PROTOBUF_LIBRARY_DEBUG
-                PROTOBUF_PROTOC_LIBRARY_DEBUG
-                PROTOBUF_LITE_LIBRARY
-                PROTOBUF_LITE_LIBRARY_DEBUG
-                )
-            if (DEFINED ${UPPER})
-                string(REPLACE "PROTOBUF_" "Protobuf_" Camel ${UPPER})
-                if (NOT DEFINED ${Camel})
-                    set(${Camel} ${${UPPER}} PARENT_SCOPE)
-                endif()
-            endif()
-        endforeach()
-    endif()
-endfunction()
-
 macro(trezor_fatal_msg msg)
     if ($ENV{USE_DEVICE_TREZOR_MANDATORY})
         message(FATAL_ERROR
@@ -72,34 +46,21 @@ endmacro()
 
 # Use Trezor master switch
 if (USE_DEVICE_TREZOR)
-    # Protobuf is required to build protobuf messages for Trezor
-    include(FindProtobuf OPTIONAL)
+    # Look for protobuf-config.cmake, provided by Protobuf
+    find_package(Protobuf CONFIG)
 
-    FIND_PACKAGE(Protobuf CONFIG)
-    if (NOT Protobuf_FOUND)
-        FIND_PACKAGE(Protobuf)
+    if (Protobuf_FOUND)
+        # https://github.com/protocolbuffers/protobuf/issues/14576
+        find_program(Protobuf_PROTOC_EXECUTABLE protoc REQUIRED)
+        set(Protobuf_LIBRARY protobuf::libprotobuf) # Compatibility with FindProtobuf.cmake
+    else()
+        # Look for FindProtobuf.cmake, provided by CMake
+        find_package(Protobuf)
     endif()
 
-    _trezor_protobuf_fix_vars()
-
     # Early fail for optional Trezor support
-    if(${Protobuf_VERSION} GREATER 21)
-        trezor_fatal_msg("Trezor: Unsupported Protobuf version ${Protobuf_VERSION}. Please, use Protobuf v21.")
-    elseif(NOT Protobuf_FOUND AND NOT Protobuf_LIBRARY AND NOT Protobuf_PROTOC_EXECUTABLE AND NOT Protobuf_INCLUDE_DIR)
-        trezor_fatal_msg("Trezor: Could not find Protobuf")
-    elseif(NOT Protobuf_LIBRARY OR NOT EXISTS "${Protobuf_LIBRARY}")
-        trezor_fatal_msg("Trezor: Protobuf library not found: ${Protobuf_LIBRARY}")
-        unset(Protobuf_FOUND)
-    elseif(NOT Protobuf_PROTOC_EXECUTABLE OR NOT EXISTS "${Protobuf_PROTOC_EXECUTABLE}")
-        trezor_fatal_msg("Trezor: Protobuf executable not found: ${Protobuf_PROTOC_EXECUTABLE}")
-        unset(Protobuf_FOUND)
-    elseif(NOT Protobuf_INCLUDE_DIR OR NOT EXISTS "${Protobuf_INCLUDE_DIR}")
-        trezor_fatal_msg("Trezor: Protobuf include dir not found: ${Protobuf_INCLUDE_DIR}")
-        unset(Protobuf_FOUND)
-    else()
-        message(STATUS "Trezor: Protobuf lib: ${Protobuf_LIBRARY}, inc: ${Protobuf_INCLUDE_DIR}, protoc: ${Protobuf_PROTOC_EXECUTABLE}")
-        set(Protobuf_INCLUDE_DIRS ${Protobuf_INCLUDE_DIR})
-        set(Protobuf_FOUND 1)  # override found if all required info was provided by variables
+    if (NOT Protobuf_FOUND)
+        trezor_fatal_msg("Trezor: protobuf library not found")
     endif()
 
     if(TREZOR_DEBUG)
@@ -150,9 +111,10 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
     endif()
 
     if(USE_DEVICE_TREZOR_PROTOBUF_TEST)
-        # For now, Protobuf v21 is the maximum supported version as v23 requires C++17. TODO: Remove once we move to C++17
-        if(${Protobuf_VERSION} GREATER 21)
-            trezor_fatal_msg("Trezor: Unsupported Protobuf version ${Protobuf_VERSION}. Please, use Protobuf v21.")
+        if(PROTOBUF_LDFLAGS)
+            set(PROTOBUF_TRYCOMPILE_LINKER "${PROTOBUF_LDFLAGS}")
+        else()
+            set(PROTOBUF_TRYCOMPILE_LINKER "${Protobuf_LIBRARY}")
         endif()
         
         try_compile(Protobuf_COMPILE_TEST_PASSED
@@ -164,7 +126,7 @@ if(Protobuf_FOUND AND USE_DEVICE_TREZOR AND TREZOR_PYTHON)
             CMAKE_EXE_LINKER_FLAGS ${CMAKE_TRY_COMPILE_LINKER_FLAGS}
             "-DINCLUDE_DIRECTORIES=${Protobuf_INCLUDE_DIR};${CMAKE_BINARY_DIR}"
             "-DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}"
-            LINK_LIBRARIES ${Protobuf_LIBRARY} ${CMAKE_TRY_COMPILE_LINK_LIBRARIES}
+            LINK_LIBRARIES "${PROTOBUF_TRYCOMPILE_LINKER}" ${CMAKE_TRY_COMPILE_LINK_LIBRARIES}
             OUTPUT_VARIABLE OUTPUT
         )
         if(NOT Protobuf_COMPILE_TEST_PASSED)
